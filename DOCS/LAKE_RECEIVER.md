@@ -103,9 +103,11 @@ Receiver session provisioning is enabled only for a configured Pan v4 input.
 When renaming a camera, update the camera setting and Bridge overrides together.
 
 Native remuxing has its own frame pump. The preview encoder reads the local
-native RTSP stream, so preview CPU load and control/renewal HTTP calls cannot
-block the native frame writer. Preview encoding preserves input timestamps
-rather than duplicating frames to catch up with a wall clock.
+native RTSP stream. Native frame writing runs separately from preview encoding
+and control/renewal HTTP requests, avoiding synchronous waits on those operations.
+All processes still share the host's CPU and memory; allow capacity for preview
+encoding. Preview encoding preserves input timestamps rather than duplicating
+frames to catch up with a wall clock.
 
 Quality is reasserted periodically. Token renewal happens outside SDK callbacks.
 Use one receiver session per physical camera. A second receiver or a Wyze app

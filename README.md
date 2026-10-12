@@ -9,10 +9,10 @@ receiver and Bridge integration. See
 [![Docker](https://github.com/IDisposable/docker-wyze-bridge/actions/workflows/docker-image.yml/badge.svg)](https://github.com/IDisposable/docker-wyze-bridge/actions/workflows/docker-image.yml)
 [![Home Assistant Add-on](https://img.shields.io/badge/home_assistant-add--on-blue.svg?logo=homeassistant&logoColor=white)](./docs/user_guide/install_ha.md)
 
-Local WebRTC / RTSP / HLS bridge for Wyze cameras. No modifications, no
-special firmware, no cloud dependency for streaming (TUTK + OG cameras
-stay entirely on-LAN; doorbell-lineage cameras use Wyze's own WebRTC
-signaling but the media still flows directly to you).
+Local WebRTC / RTSP / HLS bridge for Wyze cameras, without camera modifications
+or special firmware. The connection path depends on the model and firmware:
+TUTK and Gwell P2P provide local media paths, while Kinesis/WebRTC and the
+optional Lake receiver use Wyze cloud services for session provisioning.
 
 The main Bridge is built in **pure Go** on top of [go2rtc](https://github.com/AlexxIT/go2rtc).
 Its image has no Python or binary camera SDKs, and uses `ffmpeg` for snapshot

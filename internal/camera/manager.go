@@ -372,7 +372,9 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		// the exact dance that caused gwell-proxy's ffmpeg to die with
 		// av_interleaved_write_frame(): Broken pipe during bring-up.
 		_, protocol := m.streamSourceFor(cam)
-		if protocol == "gwell" {
+		// Preserve the existing exemption for every Gwell model, including
+		// its WebRTC variants, unless an external input was explicitly set.
+		if cam.GetInfo().IsGwell() && protocol != "rtsp" {
 			continue
 		}
 
