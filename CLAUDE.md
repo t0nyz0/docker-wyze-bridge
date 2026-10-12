@@ -10,7 +10,11 @@ Docker Wyze Bridge is a Go application that bridges Wyze cameras to standard str
 - **Gwell P2P** (OG: `GW_GC1`, `GW_GC2`): optional `gwell-proxy` sidecar handles the LAN-direct UDP P2P and republishes to go2rtc as loopback RTSP.
 - **WebRTC (KVS)** (doorbell lineage: `GW_BE1` Doorbell Pro, `GW_DBD` Doorbell Duo): go2rtc's native `#format=wyze` source pulls the Wyze KVS signaling URL + ICE servers from our loopback shim at `/internal/wyze/webrtc/<cam>` and dials Wyze's `wyze-mars-webcsrv.wyzecam.com` itself. **No sidecar.**
 
-No Python, no binary SDK. FFmpeg is bundled solely for go2rtc's JPEG snapshot endpoint; the bridge itself never invokes it.
+The main Bridge image remains Go/Alpine without Python or a binary SDK.
+Optional Pan v4 Lake support runs a separate Python/Agora/MediaMTX/FFmpeg
+companion (`docker/lake`, `docker-compose.lake.yml`). Bridge provides loopback-only
+short-lived session and token-renewal endpoints for explicitly configured cameras.
+See `DOCS/LAKE_RECEIVER.md`; native SDK dependencies stay out of the main image.
 
 Canonical design doc: `DOCS/DESIGN.md`. User-facing upgrade notes: `MIGRATION.md`. `DOCS/GWELL_RELAY_HANDOFF.md` is historical context for the GW_BE1 streaming investigation — kept for archaeological value only.
 

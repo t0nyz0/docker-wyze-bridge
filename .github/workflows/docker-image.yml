@@ -23,6 +23,34 @@ jobs:
         run: go test -v -cover ./...
       - name: Vet
         run: go vet ./...
+      - name: Race checks for camera routing and session APIs
+        run: go test -race ./internal/config ./internal/camera ./internal/webui ./internal/wyzeapi
+      - name: Receiver regressions (no SDK or camera required)
+        run: python3 -m unittest discover -s docker/lake -v
+
+  lake-receiver-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build optional receiver (no image publishing)
+        run: docker build -t wyze-lake-receiver:test docker/lake
+      - name: Initialize the bundled native SDK without a camera
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /run/lake:uid=65532,gid=65532,mode=0700,size=64m \
+            --tmpfs /tmp:uid=65532,gid=65532,mode=0700,size=128m \
+            wyze-lake-receiver:test --smoke
+      - name: Decode synthetic 4K and HD clips before and after preview recovery
+        run: |
+          docker run --rm --init --network none --read-only \
+            --tmpfs /run/lake:uid=65532,gid=65532,mode=0700,size=64m \
+            --tmpfs /tmp:uid=65532,gid=65532,mode=0700,size=128m \
+            -v "$PWD/docker/lake:/tests:ro" -w /tests \
+            -e LAKE_TEST_MEDIA=1 -e LAKE_TEST_SIZE=3840x2160 \
+            --entrypoint python3 wyze-lake-receiver:test \
+            -W error::ResourceWarning -m unittest discover -s /tests -v
 
   # Builds the underlying wyze-bridge image (single codebase, two
   # channel tags). Runs on every push — the channel distinction lives

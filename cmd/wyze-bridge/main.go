@@ -168,6 +168,7 @@ func main() {
 		Issues:    issueReg,
 		Mars:      apiClient,
 		KVS:       kvsAdapter{api: apiClient},
+		Lake:      apiClient,
 		AuthPhoneID: func() string {
 			if a := apiClient.Auth(); a != nil {
 				return a.PhoneID
@@ -351,7 +352,7 @@ func startGwellProxyIfEnabled(ctx context.Context, cfg *config.Config, camMgr *c
 	hasOG := false
 	for _, cam := range camMgr.Cameras() {
 		info := cam.GetInfo()
-		if info.IsGwell() && !info.IsWebRTCStreamer() {
+		if info.IsGwell() && !info.IsWebRTCStreamer() && cfg.CamRTSPSource(cam.Name()) == "" {
 			hasOG = true
 			break
 		}
@@ -723,7 +724,7 @@ func setupGo2RTC(ctx context.Context, cfg *config.Config, camMgr *camera.Manager
 	// AddStream from camera.Manager once they reach Connecting.
 	for _, cam := range camMgr.Cameras() {
 		info := cam.GetInfo()
-		if info.IsGwell() && !info.IsWebRTCStreamer() {
+		if info.IsGwell() && !info.IsWebRTCStreamer() && cfg.CamRTSPSource(cam.Name()) == "" {
 			configBuilder.AddStream(go2rtcmgr.StreamEntry{Name: cam.Name()})
 		}
 	}

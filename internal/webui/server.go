@@ -59,6 +59,7 @@ type Server struct {
 	onDiscoverReq DiscoverRequester
 	mars          MarsTokenMinter
 	kvs           KVSStreamProvider
+	lake          LakeSessionProvider
 	issues        *issues.Registry // optional
 	// Metrics data sources — all optional so tests and partial-setup
 	// paths (bring-up before every subsystem wires in) stay legal.
@@ -117,15 +118,16 @@ func (s *Server) Events() *EventLog {
 // callbacks) stay as Set* methods because they're constructed after
 // the server is already listening.
 type Options struct {
-	Config      *config.Config       // required
-	CameraMgr   *camera.Manager      // required
-	Version     string               // required
-	Log         zerolog.Logger       // required
-	RootCtx     context.Context      // optional; defaults to context.Background
-	Issues      *issues.Registry     // optional; nil-safe
-	Mars        MarsTokenMinter      // optional; nil → CameraToken endpoint returns 503
-	KVS         KVSStreamProvider    // optional; nil → KVS shim returns 503
-	AuthPhoneID func() string        // optional; nil → empty ClientId in KVS payload
+	Config      *config.Config      // required
+	CameraMgr   *camera.Manager     // required
+	Version     string              // required
+	Log         zerolog.Logger      // required
+	RootCtx     context.Context     // optional; defaults to context.Background
+	Issues      *issues.Registry    // optional; nil-safe
+	Mars        MarsTokenMinter     // optional; nil → CameraToken endpoint returns 503
+	KVS         KVSStreamProvider   // optional; nil → KVS shim returns 503
+	Lake        LakeSessionProvider // optional companion receiver bootstrap
+	AuthPhoneID func() string       // optional; nil → empty ClientId in KVS payload
 }
 
 // NewServer constructs a Server from Options. go2rtc, metrics
@@ -143,6 +145,7 @@ func NewServer(opts Options) *Server {
 		issues:      opts.Issues,
 		mars:        opts.Mars,
 		kvs:         opts.KVS,
+		lake:        opts.Lake,
 		authPhoneID: opts.AuthPhoneID,
 	}
 	if s.rootCtx == nil {
@@ -335,4 +338,5 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// dial Wyze's KVS signaling server. Loopback-only — the response
 	// carries short-lived Wyze-scoped TURN credentials.
 	mux.HandleFunc("/internal/wyze/webrtc/", requireLoopback(s.handleShimKVSSignaling))
+	mux.HandleFunc("/internal/wyze/lake/", requireLoopback(s.handleShimLakeSession))
 }

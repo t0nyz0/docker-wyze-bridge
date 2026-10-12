@@ -158,7 +158,7 @@ func (m *Manager) Discover(ctx context.Context) error {
 	// so folks without GW_ cameras don't pay the subprocess cost.
 	var supported []wyzeapi.CameraInfo
 	for _, cam := range cameras {
-		if cam.IsGwell() && !m.cfg.GwellEnabled {
+		if cam.IsGwell() && !m.cfg.GwellEnabled && m.cfg.CamRTSPSource(cam.NormalizedName()) == "" {
 			m.log.Debug().
 				Str("cam", cam.Nickname).
 				Str("model", cam.Model).
@@ -295,6 +295,10 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 	}
 
 	if err := go2rtc.AddStream(ctx, cam.Name(), streamURL); err != nil {
+		if protocol == "rtsp" {
+			// go2rtc errors can echo the source URL, including authentication.
+			err = fmt.Errorf("external RTSP registration failed; check go2rtc")
+		}
 		backoff := cam.IncrementError()
 		errors := cam.GetErrorCount()
 		m.log.Error().Err(err).
@@ -319,6 +323,9 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 // streaming protocol. Empty URL means publish-only slot (Gwell OG
 // cameras receiving an RTSP PUSH from gwell-proxy).
 func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
+	if source := m.cfg.CamRTSPSource(cam.Name()); source != "" {
+		return source, "rtsp"
+	}
 	info := cam.GetInfo()
 	switch {
 	case cam.ForceWebRTC() || info.IsWebRTCStreamer():
@@ -364,12 +371,19 @@ func (m *Manager) HealthCheck(ctx context.Context) {
 		// that re-PUTs the stream slot and kicks the in-flight publish —
 		// the exact dance that caused gwell-proxy's ffmpeg to die with
 		// av_interleaved_write_frame(): Broken pipe during bring-up.
-		if cam.GetInfo().IsGwell() {
+		_, protocol := m.streamSourceFor(cam)
+		if protocol == "gwell" {
 			continue
 		}
 
 		info, ok := streams[cam.Name()]
-		if !ok || len(info.Producers) == 0 {
+		// An external RTSP input is pulled on demand. No producers or
+		// consumers means idle, not failed; re-registering it would flap
+		// the source every health tick. A missing stream still needs repair.
+		if protocol == "rtsp" && ok && info != nil && len(info.Producers) == 0 && len(info.Consumers) == 0 {
+			continue
+		}
+		if !ok || info == nil || len(info.Producers) == 0 {
 			// Route through StateError with backoff so reconnectErrored's
 			// 10s ticker picks it up. Marking StateOffline used to leave
 			// the camera stuck until the next Discover refresh — reconnect
@@ -499,7 +513,7 @@ func (m *Manager) reconnectErrored(ctx context.Context) {
 	wg.Wait()
 }
 
-// SetQuality changes a camera's quality and reconnects.
+// SetQuality changes a camera's quality and reconnects model-managed inputs.
 func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
 	cam := m.GetCamera(name)
 	if cam == nil {
@@ -507,6 +521,11 @@ func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
 	}
 
 	cam.SetQuality(quality)
+	if m.cfg.CamRTSPSource(cam.Name()) != "" {
+		// The receiver owns resolution. Re-registering the unchanged pull
+		// source would only disconnect viewers and could corrupt their GOP.
+		return nil
+	}
 
 	go2rtc := m.go2rtcClient()
 	if go2rtc == nil {

@@ -39,10 +39,11 @@ type yamlConfig struct {
 }
 
 type yamlCamOption struct {
-	CamName string  `yaml:"CAM_NAME"`
-	Quality *string `yaml:"QUALITY"`
-	Audio   *bool   `yaml:"AUDIO"`
-	Record  *bool   `yaml:"RECORD"`
+	RTSPSource *string `yaml:"RTSP_SOURCE"`
+	CamName    string  `yaml:"CAM_NAME"`
+	Quality    *string `yaml:"QUALITY"`
+	Audio      *bool   `yaml:"AUDIO"`
+	Record     *bool   `yaml:"RECORD"`
 }
 
 // loadYAML attempts to load config.yml from STATE_DIR.
@@ -101,6 +102,9 @@ func (c *Config) loadYAML() error {
 	for _, opt := range yc.CamOptions {
 		key := normalizeCamName(opt.CamName)
 		ov := c.CamOverrides[key]
+		if opt.RTSPSource != nil && ov.RTSPSource == nil {
+			ov.RTSPSource = opt.RTSPSource
+		}
 		if opt.Quality != nil && ov.Quality == nil {
 			ov.Quality = opt.Quality
 		}
@@ -124,7 +128,7 @@ func (c *Config) loadYAML() error {
 // matched prefix to prevent fallthrough.
 func (c *Config) loadCamOverrides() {
 	for _, e := range os.Environ() {
-		for _, prefix := range []string{"QUALITY_", "AUDIO_", "RECORD_CMD_", "RECORD_"} {
+		for _, prefix := range []string{"RTSP_SOURCE_", "QUALITY_", "AUDIO_", "RECORD_CMD_", "RECORD_"} {
 			key, val, ok := cutEnvPrefix(e, prefix)
 			if !ok {
 				continue
@@ -132,6 +136,9 @@ func (c *Config) loadCamOverrides() {
 			camKey := normalizeCamName(key)
 			ov := c.CamOverrides[camKey]
 			switch prefix {
+			case "RTSP_SOURCE_":
+				v := val
+				ov.RTSPSource = &v
 			case "QUALITY_":
 				v := val
 				ov.Quality = &v

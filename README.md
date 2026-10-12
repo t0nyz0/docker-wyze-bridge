@@ -1,5 +1,9 @@
 # Docker Wyze Bridge
 
+Pan v4 cameras using Wyze's Lake/Agora transport can use the optional companion
+receiver and Bridge integration. See
+[Pan v4 Lake setup](DOCS/LAKE_RECEIVER.md).
+
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/idisposable/docker-wyze-bridge?logo=github)](https://github.com/idisposable/docker-wyze-bridge/releases/latest)
 [![GHCR Package](https://img.shields.io/badge/ghcr-package-blue?logo=github)](https://ghcr.io/idisposable/docker-wyze-bridge)
 [![Docker](https://github.com/IDisposable/docker-wyze-bridge/actions/workflows/docker-image.yml/badge.svg)](https://github.com/IDisposable/docker-wyze-bridge/actions/workflows/docker-image.yml)
@@ -10,9 +14,11 @@ special firmware, no cloud dependency for streaming (TUTK + OG cameras
 stay entirely on-LAN; doorbell-lineage cameras use Wyze's own WebRTC
 signaling but the media still flows directly to you).
 
-Built in **pure Go** on top of [go2rtc](https://github.com/AlexxIT/go2rtc).
-No Python, no binary SDKs, no C code beyond the `ffmpeg` used for
-snapshot extraction and MP4 recording. Docker image ~65 MB.
+The main Bridge is built in **pure Go** on top of [go2rtc](https://github.com/AlexxIT/go2rtc).
+Its image has no Python or binary camera SDKs, and uses `ffmpeg` for snapshot
+extraction and MP4 recording. The optional Lake companion separately adds
+Python, Agora's native SDK, MediaMTX, and FFmpeg; see its setup and dependency
+notes above. The main Docker image remains approximately 65 MB.
 
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-success.svg)
 ![Supports arm64v8](https://img.shields.io/badge/arm64v8-yes-success.svg)
@@ -103,7 +109,7 @@ configure the path, the bridge routes based on the model.
 | Wyze Cam Pan V2 | `HL_PAN2` | TUTK | Should work |
 | Wyze Cam Pan V3 | `HL_PAN3` | TUTK | Mostly working |
 | Wyze Cam Pan Pro (2K) | `HL_PANP` | TUTK | Should work |
-| Wyze Cam Pan v4 | `HL_PAN4` | WebRTC | Expected (cloud sends no TUTK uid) |
+| Wyze Cam Pan v4 | `HL_PAN4` | WebRTC / optional Lake receiver | Firmware/provider dependent; [Lake setup](DOCS/LAKE_RECEIVER.md) includes native video and an HD preview |
 | Wyze Cam Outdoor | `WVOD1` | TUTK | Should work |
 | Wyze Cam Outdoor V2 | `HL_WCO2` | TUTK | Should work |
 | Wyze Cam Doorbell V1 | `WYZEDB3` | TUTK | Needs support in go2rtc |

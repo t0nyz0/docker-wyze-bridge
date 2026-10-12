@@ -1,0 +1,46 @@
+# Optional Linux host-network setup. Run from this repository's root:
+# docker compose --env-file .env.lake -f docker-compose.lake.yml up -d --build
+# Uses source from this checkout, never an unmodified stable Bridge image.
+services:
+  wyze-bridge:
+    image: wyze-bridge-lake:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    env_file: ${WYZE_CREDENTIALS_FILE:-.env.wyze}
+    environment:
+      - STATE_DIR=/config
+      - BRIDGE_PORT=${BRIDGE_PORT:-5080}
+      - GO2RTC_RTSP_PORT=${BRIDGE_RTSP_PORT:-8554}
+      - GO2RTC_API_PORT=${BRIDGE_GO2RTC_PORT:-1984}
+      - RTSP_SOURCE_${LAKE_CAMERA:?Set the normalized camera name}=rtsp://127.0.0.1:${LAKE_RTSP_PORT:-8555}/${LAKE_CAMERA}
+      - GO2RTC_EXTRA_STREAMS=${LAKE_CAMERA}_native=rtsp://127.0.0.1:${LAKE_RTSP_PORT:-8555}/${LAKE_CAMERA}_native
+    volumes:
+      - ${BRIDGE_CONFIG_DIR:-./config}:/config
+      - ${BRIDGE_MEDIA_DIR:-./media}:/media
+  lake-receiver:
+    image: wyze-lake-receiver:local
+    build:
+      context: docker/lake
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - wyze-bridge
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /run/lake:uid=65532,gid=65532,mode=0700,size=64m
+      - /tmp:uid=65532,gid=65532,mode=0700,size=16m
+    environment:
+      LAKE_CAMERA: ${LAKE_CAMERA:?Set the normalized camera name}
+      LAKE_BRIDGE_URL: http://127.0.0.1:${BRIDGE_PORT:-5080}
+      LAKE_RTSP_PORT: ${LAKE_RTSP_PORT:-8555}
+      LAKE_API_PORT: ${LAKE_API_PORT:-18555}
+      LAKE_QUALITY: ${LAKE_QUALITY:-2k}
+      LAKE_FPS: ${LAKE_FPS:-20}
+      LAKE_PREVIEW: "true"
+      LAKE_PREVIEW_WIDTH: ${LAKE_PREVIEW_WIDTH:-1920}
+      LAKE_PREVIEW_HEIGHT: ${LAKE_PREVIEW_HEIGHT:-1080}

@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -136,10 +137,11 @@ type Config struct {
 
 // CamOverride holds per-camera setting overrides.
 type CamOverride struct {
-	Quality   *string
-	Audio     *bool
-	Record    *bool
-	RecordCmd *string // per-camera RECORD_CMD_<CAM> — overrides global
+	RTSPSource *string // optional external receiver input, before model routing
+	Quality    *string
+	Audio      *bool
+	Record     *bool
+	RecordCmd  *string // per-camera RECORD_CMD_<CAM> — overrides global
 }
 
 // Load reads configuration from environment variables, Docker secrets,
@@ -282,6 +284,9 @@ func Load() (*Config, error) {
 
 	// Load per-camera overrides from env
 	cfg.loadCamOverrides()
+	if err := cfg.validateRTSPSources(); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
 }
@@ -311,6 +316,33 @@ func (c *Config) CamRecord(camName string) bool {
 		return *ov.Record
 	}
 	return c.RecordAll
+}
+
+// CamRTSPSource returns an explicitly configured receiver input. Empty keeps
+// the normal TUTK/Kinesis/Gwell routing. Quality is controlled by the receiver.
+func (c *Config) CamRTSPSource(camName string) string {
+	if c == nil {
+		return ""
+	}
+	if ov, ok := c.CamOverrides[normalizeCamName(camName)]; ok && ov.RTSPSource != nil {
+		return strings.TrimSpace(*ov.RTSPSource)
+	}
+	return ""
+}
+
+func (c *Config) validateRTSPSources() error {
+	for name := range c.CamOverrides {
+		source := c.CamRTSPSource(name)
+		if source == "" {
+			continue
+		}
+		u, err := url.Parse(source)
+		if err != nil || (u.Scheme != "rtsp" && u.Scheme != "rtsps") || u.Hostname() == "" || u.Opaque != "" || u.Fragment != "" {
+			// Do not print the URL or parser error: both can contain credentials.
+			return fmt.Errorf("RTSP_SOURCE_%s must be an absolute rtsp:// or rtsps:// URL without fragments", name)
+		}
+	}
+	return nil
 }
 
 func normalizeCamName(name string) string {

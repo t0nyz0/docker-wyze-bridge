@@ -53,7 +53,7 @@ func (s *Server) handleShimCameraList(w http.ResponseWriter, r *http.Request) {
 		// and must be hidden from gwell-proxy to avoid a permanent
 		// Gwell-P2P retry loop that never produces video.
 		info := cam.GetInfo()
-		if info.IsGwell() && !info.IsWebRTCStreamer() {
+		if info.IsGwell() && !info.IsWebRTCStreamer() && s.cfg.CamRTSPSource(cam.Name()) == "" {
 			ids = append(ids, info.MAC)
 		}
 	}

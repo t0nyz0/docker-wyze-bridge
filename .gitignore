@@ -17,6 +17,9 @@ vendor/
 docker-compose.override.yml
 
 # Secrets
+.env*
+**/.env*
+!**/.env*.example
 **/mfa_token
 **/totp
 **/tokens/
@@ -24,6 +27,8 @@ docker-compose.override.yml
 test_env.list
 
 # Runtime
+**/__pycache__/
+*.py[cod]
 /config/
 /media/
 
