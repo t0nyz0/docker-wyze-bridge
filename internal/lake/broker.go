@@ -20,17 +20,20 @@ type Provider interface {
 type cameraOperation struct{ cancel context.CancelFunc }
 
 type Broker struct {
-	OnError  func(string, error)
-	OnEvent  func(string, Event)
-	ctx      context.Context
-	provider Provider
-	mu       sync.Mutex
-	sessions map[string]*Session
-	locks    map[string]*sync.Mutex
-	pending  map[string]*cameraOperation
-	epochs   map[string]uint64
-	stops    map[string]uint64
-	cancel   context.CancelFunc
+	OnError func(string, error)
+	OnEvent func(string, Event)
+	// Set before serving. Nil disables quality probing (for external engines/tests).
+	ProbeQuality    ResolutionProbe
+	ctx             context.Context
+	provider        Provider
+	mu              sync.Mutex
+	sessions        map[string]*Session
+	locks           map[string]*sync.Mutex
+	pending         map[string]*cameraOperation
+	epochs          map[string]uint64
+	stops           map[string]uint64
+	cancel          context.CancelFunc
+	qualityPolicies map[string]*qualityPolicy
 }
 
 func NewBroker(ctx context.Context, p Provider) *Broker {
@@ -251,6 +254,7 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 	}
 	lock.Unlock()
 	locked = false
+	b.startQualityGuard(cameraCtx, name, session)
 	// go2rtc closes this socket after ICE connects. Its r.Context is therefore
 	// deliberately not the parent of the persistent gateway session.
 	go func() {

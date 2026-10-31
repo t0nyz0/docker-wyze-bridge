@@ -130,6 +130,9 @@ func TestSlowRenewalKeepsPingAndControlFlow(t *testing.T) {
 				if err != nil || !strings.Contains(string(payload), "sight-safe::check-user") {
 					t.Fatal("periodic ownership control changed")
 				}
+				if strings.Contains(string(payload), "camera::resolution") {
+					t.Fatal("ownership heartbeat bypassed bounded quality recovery")
+				}
 				controls++
 			case "renew_token":
 				t.Fatal("token was sent before the blocked API returned")

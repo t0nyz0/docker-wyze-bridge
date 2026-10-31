@@ -204,6 +204,48 @@ clip on the final image still needs a user playback check.
 
 Offline checks:
 
+### Native quality recovery
+
+The embedded receiver checks actual decoded frames from the existing local
+`<camera>_4k` output. Stream headers alone can retain 4K dimensions while the
+camera is sending predominantly 640x360 frames. A twelve-second decoded sample
+discards the first three seconds, requires at least thirty steady frames over
+six seconds, and evaluates both the full steady window and its final two
+seconds. An occasional 4K frame does not hide sustained low-resolution video;
+cached low-resolution startup frames do not trigger recovery.
+
+After two consecutive low samples, the existing gateway session requests its
+configured high quality. This does not create another Wyze session, reset Home
+pairings, change stream URLs, or restart Bridge. Ownership heartbeats continue
+without repeatedly rewriting camera quality. Recovery is limited to once per
+fifteen minutes and three times per rolling hour for a camera within the
+Bridge process. Replacing a camera session preserves that rate history; a
+Bridge process restart starts fresh history after its two-minute startup grace.
+
+Probes run about once per minute after startup grace, with a twenty-five-second
+deadline, bounded output, and cancellation when the owning camera session ends.
+Probe failures break the low-quality streak and do not issue camera controls.
+The guard is attached only to the embedded engine's high-quality Lake sessions.
+It uses the FFprobe binary already included in the runtime image; no Python
+service or new camera credentials are required. It does not fix total upstream
+outages or prove that firmware will never lower quality again.
+
+Regression tests cover mixed 4K/360p frames, cached startup dimensions, a
+recovered tail, missing/invalid probes, cooldown and rolling limits, stale
+session results, cancellation, redacted errors and controls sent on the
+original gateway connection. A read-only opt-in live check is available:
+
+```sh
+WYZE_NATIVE_RESOLUTION_QA=1 go test ./internal/lake -run '^TestNativeResolutionLiveQA$' -v
+```
+
+That check requires an existing Front output on loopback port 8554 and performs
+no camera control. Synthetic gateway tests do not establish real-camera
+recovery during a future downgrade; live deployment/recovery validation is a
+separate step.
+
+### Build and offline checks
+
 ```sh
 go test -race ./...
 go vet ./...

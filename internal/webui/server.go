@@ -155,8 +155,15 @@ func NewServer(opts Options) *Server {
 	}
 	if s.lake != nil {
 		s.lakeBroker = lake.NewBroker(s.rootCtx, s.lake)
+		if opts.Config != nil && opts.Config.Go2RTCURL == "" {
+			s.lakeBroker.ProbeQuality = lake.NewResolutionProbe(opts.Config.Go2RTCRTSPPort)
+		}
 		s.lakeBroker.OnEvent = func(name string, event lake.Event) {
-			s.log.Info().Str("cam", name).Str("event", event.Kind).Int("code", event.Code).Msg("Lake session")
+			log := s.log.Info().Str("cam", name).Str("event", event.Kind).Int("code", event.Code)
+			if event.Frames > 0 {
+				log = log.Int("width", event.Width).Int("height", event.Height).Int("frames", event.Frames).Int("low_frames", event.LowFrames)
+			}
+			log.Msg("Lake session")
 		}
 		s.lakeBroker.OnError = func(name string, err error) { s.log.Warn().Str("cam", name).Err(err).Msg("Lake signaling failed") }
 	}
