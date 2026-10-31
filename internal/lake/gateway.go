@@ -187,10 +187,9 @@ func encryptedSecret(secret string) (string, error) {
 // Session owns the gateway websocket. It outlives go2rtc's short offer/answer
 // socket, which go2rtc intentionally closes once ICE is connected.
 type Event struct {
-	Kind              string
-	Code              int
-	Width, Height     int
-	Frames, LowFrames int
+	Kind          string
+	Code          int
+	Width, Height int // Only populated for decoded quality samples.
 }
 
 const (
@@ -226,11 +225,8 @@ func (s *Session) Close() {
 }
 func (s *Session) Events() <-chan Event { return s.events }
 func (s *Session) notify(kind string, code int) {
-	s.emit(Event{Kind: kind, Code: code})
-}
-func (s *Session) emit(event Event) {
 	select {
-	case s.events <- event:
+	case s.events <- Event{Kind: kind, Code: code}:
 	default:
 	}
 }
@@ -301,6 +297,25 @@ func (s *Session) notifyVideoStream(stream object) {
 	}
 	s.notify(kind, 0)
 }
+
+func (s *Session) notifyUserOffline(m message) {
+	kind := "user_offline_unknown"
+	uid := number64(m.Body["uid"])
+	// Compare only valid RTC UIDs with the originally negotiated publisher.
+	// A fractional JSON number must not be truncated into a false match.
+	if uid > 0 && uid <= 4294967295 && s.videoUID > 0 && s.videoUID <= 4294967295 {
+		n, numeric := m.Body["uid"].(float64)
+		if !numeric || n == float64(uid) {
+			kind = "user_offline_other"
+			if uid == s.videoUID {
+				kind = "user_offline_publisher"
+			}
+		}
+	}
+	// Reason has no verified numeric mapping for this wire notice. Preserve
+	// existing diagnostic codes without exposing identities or raw payloads.
+	s.notify(kind, m.diagnosticCode())
+}
 func (s *Session) subscribe(stream object) error {
 	return s.send("subscribe", object{"stream_id": stream["uid"], "stream_type": "video", "mode": "rtc", "codec": "h265", "p2p_id": 1, "twcc": false, "rtx": true, "extend": "", "ssrcId": stream["ssrcId"]})
 }
@@ -314,6 +329,11 @@ func (s *Session) controls(quality bool) error {
 		return e
 	}
 	return s.send("data_stream", object{"payload": base64.StdEncoding.EncodeToString(raw), "syncWithAudio": false, "sendTs": time.Since(s.started).Milliseconds()})
+}
+
+// Continue ownership checks while limiting periodic quality retries to startup.
+func (s *Session) periodicControls(elapsed time.Duration) error {
+	return s.controls(elapsed > 20*time.Second && elapsed < 100*time.Second)
 }
 
 func Open(ctx context.Context, initial *wyzeapi.LakeSession, sdp, quality string, renew func(context.Context, int) (string, error)) (*Session, string, error) {
@@ -452,7 +472,7 @@ func (s *Session) run(ctx context.Context) {
 				s.notify("video_stream_removed", m.diagnosticCode())
 			}
 			if m.Type == "on_user_offline" {
-				s.notify("user_offline", m.diagnosticCode())
+				s.notifyUserOffline(m)
 			}
 			if m.Type == "on_user_online" && num(m.Body["uid"]) > 0 && num(m.Body["uid"]) != s.initial.UID {
 				if s.controls(true) != nil {
@@ -475,6 +495,7 @@ func (s *Session) run(ctx context.Context) {
 	defer ping.Stop()
 	control := time.NewTicker(12 * time.Second)
 	defer control.Stop()
+	begin := time.Now()
 	renewAfter := time.Duration(s.initial.Lifetime) * time.Second * 2 / 3
 	if renewAfter < 30*time.Second {
 		renewAfter = 30 * time.Second
@@ -502,9 +523,7 @@ func (s *Session) run(ctx context.Context) {
 				return
 			}
 		case <-control.C:
-			// Ownership heartbeats must not repeatedly rewrite camera quality.
-			// The decoded-frame guard owns bounded quality recovery requests.
-			if s.controls(false) != nil {
+			if s.periodicControls(time.Since(begin)) != nil {
 				s.notify("control_send_failed", 0)
 				return
 			}

@@ -37,7 +37,7 @@ func TestBrokerDrainsBufferedEventsBeforeRelease(t *testing.T) {
 					got = append(got, event)
 				}
 			}
-			b.drainSessionEvents("front", s)
+			b.drainSessionEvents("front", s, op)
 			b.release("front", s, op)
 			if len(s.events) != 0 || (callback && !reflect.DeepEqual(got, want)) {
 				t.Fatalf("buffered diagnostics lost: %v, remaining %d", got, len(s.events))
@@ -66,7 +66,7 @@ func TestBrokerDiagnosticDrainIsCapacityBounded(t *testing.T) {
 		}
 	}}
 	done := make(chan struct{})
-	go func() { b.drainSessionEvents("front", s); close(done) }()
+	go func() { b.drainSessionEvents("front", s, nil); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -83,7 +83,7 @@ func TestBrokerDiagnosticDrainDoesNotWaitForLateEvents(t *testing.T) {
 	var calls atomic.Int32
 	b := &Broker{OnEvent: func(string, Event) { calls.Add(1) }}
 	done := make(chan struct{})
-	go func() { b.drainSessionEvents("front", s); close(done) }()
+	go func() { b.drainSessionEvents("front", s, nil); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -343,7 +343,7 @@ func TestSessionObservesOnlyLatestMatchingRenewalReply(t *testing.T) {
 	if event := diagnosticEvent(t, s); event != (Event{Kind: "gateway_request_rejected", Code: 999}) {
 		t.Fatalf("unrelated rejection was not safely observed: %+v", event)
 	}
-	if event := diagnosticEvent(t, s); event.Kind != "user_offline" {
+	if event := diagnosticEvent(t, s); event.Kind != "user_offline_unknown" {
 		t.Fatalf("stale/nonterminal reply was treated as acceptance: %+v", event)
 	}
 	if err := peer.WriteJSON(object{"_id": second.ID, "_result": "error", "error_code": 109,
@@ -477,7 +477,7 @@ func TestSessionOtherRequestRejectionDoesNotChangeBehavior(t *testing.T) {
 	if err := peer.WriteJSON(message{Type: "on_user_offline", Body: object{}}); err != nil {
 		t.Fatal(err)
 	}
-	if event := diagnosticEvent(t, s); event.Kind != "user_offline" {
+	if event := diagnosticEvent(t, s); event.Kind != "user_offline_unknown" {
 		t.Fatalf("other rejection changed or duplicated reader processing: %+v", event)
 	}
 	select {

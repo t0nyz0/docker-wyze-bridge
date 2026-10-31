@@ -1,205 +1,104 @@
 package lake
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
-	"math"
-	"net"
-	"net/url"
-	"os/exec"
-	"strconv"
 	"time"
 )
 
+// Resolution is measured from decoded frames, never SDP or cached stream metadata.
+type Resolution struct{ Width, Height int }
+
 const (
-	qualityStartupGrace  = 2 * time.Minute
-	qualityCheckInterval = time.Minute
-	qualityProbeTimeout  = 25 * time.Second
-	qualityCooldown      = 15 * time.Minute
-	qualityHourlyLimit   = 3
-	qualityOutputLimit   = 512 * 1024
+	qualityWarmup       = 2 * time.Minute
+	qualityInterval     = time.Minute
+	qualityCooldown     = 2 * time.Minute
+	qualityBudgetWindow = time.Hour
+	qualityMaxAttempts  = 3
 )
 
-// ResolutionSample describes decoded frames after decoder startup, not the
-// cached stream/SPS dimensions. Occasional high-resolution frames do not make
-// a predominantly low-resolution sample healthy.
-type ResolutionSample struct {
-	Width, Height             int
-	Frames, LowFrames         int
-	TailFrames, TailLowFrames int
-}
-
-func (s ResolutionSample) low() bool {
-	return s.Frames >= 30 && s.TailFrames > 0 &&
-		2*s.LowFrames >= s.Frames && 2*s.TailLowFrames >= s.TailFrames
-}
-
-type ResolutionProbe func(context.Context, string) (ResolutionSample, error)
-
-type decodedFrame struct {
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	PTS    string `json:"best_effort_timestamp_time"`
-}
-
-// NewResolutionProbe reads the existing embedded go2rtc output. It does not
-// provision another manufacturer session and never reads account credentials.
-func NewResolutionProbe(rtspPort int) ResolutionProbe {
-	return func(ctx context.Context, camera string) (ResolutionSample, error) {
-		if rtspPort < 1 || rtspPort > 65535 {
-			return ResolutionSample{}, errors.New("invalid local RTSP port")
-		}
-		source := (&url.URL{Scheme: "rtsp", Host: net.JoinHostPort("127.0.0.1", strconv.Itoa(rtspPort)), Path: "/" + camera + "_4k"}).String()
-		ctx, cancel := context.WithTimeout(ctx, qualityProbeTimeout)
-		defer cancel()
-		command := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-rtsp_transport", "tcp",
-			"-rw_timeout", "8000000", "-threads", "2", "-select_streams", "v:0",
-			"-read_intervals", "%+12", "-show_frames", "-show_entries",
-			"frame=width,height,best_effort_timestamp_time", "-of", "json", source)
-		output := &qualityBuffer{}
-		command.Stdout, command.Stderr = output, io.Discard
-		command.WaitDelay = 2 * time.Second
-		if command.Run() != nil {
-			// Neither FFmpeg diagnostics nor command arguments enter protocol logs.
-			return ResolutionSample{}, errors.New("native resolution probe failed")
-		}
-		return parseResolutionSample(output.Bytes())
-	}
-}
-
-// Do not embed bytes.Buffer: its promoted ReadFrom would let io.Copy bypass
-// Write's limit when os/exec drains the subprocess pipe.
-type qualityBuffer struct{ buffer bytes.Buffer }
-
-func (b *qualityBuffer) Bytes() []byte { return b.buffer.Bytes() }
-func (b *qualityBuffer) Len() int      { return b.buffer.Len() }
-
-func (b *qualityBuffer) Write(p []byte) (int, error) {
-	if len(p) > qualityOutputLimit-b.Len() {
-		return 0, errors.New("resolution sample exceeds output limit")
-	}
-	return b.buffer.Write(p)
-}
-
-func parseResolutionSample(raw []byte) (ResolutionSample, error) {
-	var data struct {
-		Frames []decodedFrame `json:"frames"`
-	}
-	if len(raw) > qualityOutputLimit || json.Unmarshal(raw, &data) != nil {
-		return ResolutionSample{}, errors.New("invalid decoded resolution sample")
-	}
-	type frame struct {
-		seconds       float64
-		width, height int
-	}
-	var steady []frame
-	var origin, previous float64
-	haveOrigin := false
-	for _, f := range data.Frames {
-		pts, err := strconv.ParseFloat(f.PTS, 64)
-		if err != nil || math.IsNaN(pts) || math.IsInf(pts, 0) || f.Width <= 0 || f.Height <= 0 {
-			continue
-		}
-		if !haveOrigin {
-			origin, previous, haveOrigin = pts, pts, true
-		}
-		if pts < previous {
-			return ResolutionSample{}, errors.New("nonmonotonic decoded resolution sample")
-		}
-		previous = pts
-		// Fresh decoders can initially expose stale cached parameter sets.
-		if pts-origin >= 3 {
-			steady = append(steady, frame{pts - origin, f.Width, f.Height})
-		}
-	}
-	if len(steady) < 30 || steady[len(steady)-1].seconds-steady[0].seconds < 6 {
-		return ResolutionSample{}, errors.New("insufficient steady decoded video")
-	}
-	last := steady[len(steady)-1]
-	sample := ResolutionSample{Width: last.width, Height: last.height, Frames: len(steady)}
-	for _, f := range steady {
-		low := f.width < 1280 || f.height < 720
-		if low {
-			sample.LowFrames++
-		}
-		if f.seconds >= last.seconds-2 {
-			sample.TailFrames++
-			if low {
-				sample.TailLowFrames++
-			}
-		}
-	}
-	return sample, nil
-}
-
 type qualityPolicy struct {
-	consecutive int
-	lastSample  time.Time
-	requests    []time.Time
+	lowSamples     int
+	attempts       []time.Time
+	lastAttempt    time.Time
+	low, exhausted bool
 }
 
-func (p *qualityPolicy) observe(now time.Time, sample ResolutionSample, err error) bool {
-	// An unknown sample breaks the streak and never causes camera control.
-	if err != nil || !sample.low() {
-		p.consecutive = 0
-		p.lastSample = now
-		return false
+// observe requires two consecutive low samples. Errors/idle/transitions break
+// that sequence. Recovery clears the warning, but does not refill the budget.
+func (p *qualityPolicy) observe(now time.Time, resolution Resolution, err error) (event string, retry bool) {
+	if err != nil || resolution.Width <= 0 || resolution.Height <= 0 {
+		p.lowSamples = 0
+		return "", false
 	}
-	if !p.lastSample.IsZero() && (now.Sub(p.lastSample) < 45*time.Second || now.Sub(p.lastSample) > 3*time.Minute) {
-		p.consecutive = 0
-	}
-	p.lastSample = now
-	p.consecutive++
-	if p.consecutive < 2 {
-		return false
-	}
-	var recent []time.Time
-	for _, request := range p.requests {
-		if now.Sub(request) < time.Hour {
-			recent = append(recent, request)
+	if resolution.Width >= 3840 && resolution.Height >= 2160 {
+		p.lowSamples = 0
+		p.exhausted = false
+		if p.low {
+			p.low = false
+			return "quality_recovered", false
 		}
+		return "", false
 	}
-	p.requests = recent
-	if len(recent) >= qualityHourlyLimit || (len(recent) > 0 && now.Sub(recent[len(recent)-1]) < qualityCooldown) {
+	p.lowSamples++
+	if p.lowSamples < 2 {
+		return "", false
+	}
+	if !p.low {
+		p.low = true
+		event = "quality_low"
+	}
+	for len(p.attempts) > 0 && now.Sub(p.attempts[0]) >= qualityBudgetWindow {
+		p.attempts = p.attempts[1:]
+		p.exhausted = false
+	}
+	if !p.lastAttempt.IsZero() && now.Sub(p.lastAttempt) < qualityCooldown {
+		return event, false
+	}
+	if len(p.attempts) >= qualityMaxAttempts {
+		if !p.exhausted {
+			p.exhausted = true
+			return "quality_retry_exhausted", false
+		}
+		return event, false
+	}
+	p.attempts = append(p.attempts, now)
+	p.lastAttempt = now
+	return event, true
+}
+
+func (b *Broker) ownsQualitySession(name string, session *Session, operation *cameraOperation) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ctx.Err() == nil && b.sessions[name] == session && b.pending[name] == operation && b.epochs[name] == operation.epoch
+}
+
+// requestQuality can only write to the captured, still-owned session. It never
+// provisions a receiver or replaces a session. A concurrent close makes the
+// write fail on the old socket; it cannot affect the replacement session.
+func (b *Broker) requestQuality(name string, session *Session, operation *cameraOperation) bool {
+	if !b.ownsQualitySession(name, session, operation) {
 		return false
 	}
-	// Reserve the attempt before sending, including failures/uncertain results.
-	p.requests = append(p.requests, now)
-	p.consecutive = 0
+	select {
+	case <-session.Done():
+		return false
+	default:
+	}
+	if err := session.controls(true); err != nil {
+		session.notify("quality_retry_send_failed", 0)
+		return false
+	}
+	session.notify("quality_retry_sent", 0)
 	return true
 }
 
-func (b *Broker) ownsQualitySession(name string, session *Session) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.sessions[name] == session && b.ctx.Err() == nil
+func (b *Broker) guardQuality(ctx context.Context, name string, session *Session, operation *cameraOperation) {
+	b.runQualityGuard(ctx, name, session, operation, qualityWarmup, qualityInterval)
 }
 
-func (b *Broker) startQualityGuard(ctx context.Context, name string, session *Session) {
-	probe := b.ProbeQuality
-	if probe == nil || session.quality != "2k" {
-		return
-	}
-	b.mu.Lock()
-	if b.qualityPolicies == nil {
-		b.qualityPolicies = map[string]*qualityPolicy{}
-	}
-	policy := b.qualityPolicies[name]
-	if policy == nil {
-		policy = &qualityPolicy{}
-		b.qualityPolicies[name] = policy
-	}
-	// New sessions get grace and a new streak, but keep camera-level rate history.
-	policy.consecutive, policy.lastSample = 0, time.Time{}
-	b.mu.Unlock()
-	go b.runQualityGuard(ctx, name, session, probe)
-}
-
-func (b *Broker) runQualityGuard(parent context.Context, name string, session *Session, probe ResolutionProbe) {
-	ctx, cancel := context.WithCancel(parent)
+func (b *Broker) runQualityGuard(ctx context.Context, name string, session *Session, operation *cameraOperation, warmup, interval time.Duration) {
+	// The guard belongs to this session, including while a probe is running.
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
 		select {
@@ -208,62 +107,45 @@ func (b *Broker) runQualityGuard(parent context.Context, name string, session *S
 		case <-ctx.Done():
 		}
 	}()
-	timer := time.NewTimer(qualityStartupGrace)
+	timer := time.NewTimer(warmup)
 	defer timer.Stop()
+	var policy qualityPolicy
+	failedProbes := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			b.checkQuality(ctx, name, session, probe)
-			timer.Reset(qualityCheckInterval)
 		}
+		if !b.ownsQualitySession(name, session, operation) {
+			return
+		}
+		probeCtx, stop := context.WithTimeout(ctx, 25*time.Second)
+		resolution, err := b.ProbeQuality(probeCtx, name)
+		stop()
+		if ctx.Err() != nil || !b.ownsQualitySession(name, session, operation) {
+			return
+		}
+		if err != nil {
+			failedProbes++
+			if failedProbes == 3 {
+				session.notify("quality_probe_unavailable", 0)
+			}
+		}
+		if err == nil && resolution.Width > 0 && resolution.Height > 0 {
+			failedProbes = 0
+			select {
+			case session.events <- Event{Kind: "quality_sample", Width: resolution.Width, Height: resolution.Height}:
+			default:
+			}
+		}
+		event, retry := policy.observe(time.Now(), resolution, err)
+		if event != "" {
+			session.notify(event, 0)
+		}
+		if retry {
+			b.requestQuality(name, session, operation)
+		}
+		timer.Reset(interval)
 	}
-}
-
-func (b *Broker) checkQuality(ctx context.Context, name string, session *Session, probe ResolutionProbe) {
-	if ctx.Err() != nil || session.quality != "2k" || !b.ownsQualitySession(name, session) {
-		return
-	}
-	sample, err := probe(ctx, name)
-	if ctx.Err() != nil {
-		return
-	}
-	b.guardQuality(name, session, sample, err, time.Now())
-}
-
-func (b *Broker) guardQuality(name string, session *Session, sample ResolutionSample, err error, now time.Time) {
-	b.mu.Lock()
-	if b.sessions[name] != session || b.ctx.Err() != nil {
-		b.mu.Unlock()
-		return
-	}
-	if b.qualityPolicies == nil {
-		b.qualityPolicies = map[string]*qualityPolicy{}
-	}
-	policy := b.qualityPolicies[name]
-	if policy == nil {
-		policy = &qualityPolicy{}
-		b.qualityPolicies[name] = policy
-	}
-	request := policy.observe(now, sample, err)
-	b.mu.Unlock()
-	if err != nil {
-		session.emit(Event{Kind: "quality_probe_failed"})
-		return
-	}
-	session.emit(Event{Kind: "quality_sample", Width: sample.Width, Height: sample.Height, Frames: sample.Frames, LowFrames: sample.LowFrames})
-	if !request || !b.ownsQualitySession(name, session) {
-		return
-	}
-	select {
-	case <-session.Done():
-		return
-	default:
-	}
-	if session.controls(true) != nil {
-		session.emit(Event{Kind: "quality_request_failed"})
-		return
-	}
-	session.emit(Event{Kind: "quality_requested"})
 }
