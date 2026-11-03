@@ -174,7 +174,13 @@ func NewServer(opts Options) *Server {
 				s.issues.Report(issues.Issue{ID: "camera/quality-check/" + name, Severity: issues.SeverityWarn, Scope: "camera", Camera: name, Message: "Native video quality check unavailable", Detail: "Bridge could not inspect three video samples. Check that camera live video is working. Automatic quality requests wait for confirmed low-resolution frames."})
 			case "quality_sample":
 				s.issues.Resolve("camera/quality-check/" + name)
-				if event.Width >= 3840 && event.Height >= 2160 {
+				target := lake.NativeResolution("")
+				if s.camMgr != nil {
+					if cam := s.camMgr.GetCamera(name); cam != nil {
+						target = lake.NativeResolution(wyzeapi.LakeQuality(cam.GetInfo().Model))
+					}
+				}
+				if event.Width >= target.Width && event.Height >= target.Height {
 					s.issues.Resolve("camera/quality/" + name)
 				}
 			case "quality_low", "quality_retry_exhausted":
@@ -182,7 +188,7 @@ func NewServer(opts Options) *Server {
 				if event.Kind == "quality_retry_exhausted" {
 					detail = "High-quality requests have not restored native resolution. Automatic retries are paused until the hourly budget resets; check the camera or another active Wyze viewer."
 				}
-				s.issues.Report(issues.Issue{ID: "camera/quality/" + name, Severity: issues.SeverityWarn, Scope: "camera", Camera: name, Message: "Camera native resolution is below 4K", Detail: detail})
+				s.issues.Report(issues.Issue{ID: "camera/quality/" + name, Severity: issues.SeverityWarn, Scope: "camera", Camera: name, Message: "Camera native resolution is below its maximum", Detail: detail})
 			case "quality_recovered":
 				s.issues.Resolve("camera/quality/" + name)
 			}

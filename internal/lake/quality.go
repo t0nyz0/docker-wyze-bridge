@@ -16,10 +16,35 @@ const (
 )
 
 type qualityPolicy struct {
+	target         Resolution // Zero means the Pan v4's 3840x2160.
 	lowSamples     int
 	attempts       []time.Time
 	lastAttempt    time.Time
 	low, exhausted bool
+}
+
+// guardsQuality reports whether a session asks for the camera's native
+// resolution and so gets the quality guard; a "360p" session wants the drop.
+func guardsQuality(quality string) bool {
+	return quality == "2k" || quality == "2.5k"
+}
+
+// NativeResolution is the decoded size a camera sends once its quality label
+// has taken effect: "2k" is the Pan v4's 3840x2160, "2.5k" the Bulb Cam Pan's
+// 2560x1440. Anything smaller counts as a drop.
+func NativeResolution(quality string) Resolution {
+	if quality == "2.5k" {
+		return Resolution{Width: 2560, Height: 1440}
+	}
+	return Resolution{Width: 3840, Height: 2160}
+}
+
+func (p *qualityPolicy) atTarget(resolution Resolution) bool {
+	target := p.target
+	if target.Width == 0 || target.Height == 0 {
+		target = NativeResolution("")
+	}
+	return resolution.Width >= target.Width && resolution.Height >= target.Height
 }
 
 // observe requires two consecutive low samples. Errors/idle/transitions break
@@ -29,7 +54,7 @@ func (p *qualityPolicy) observe(now time.Time, resolution Resolution, err error)
 		p.lowSamples = 0
 		return "", false
 	}
-	if resolution.Width >= 3840 && resolution.Height >= 2160 {
+	if p.atTarget(resolution) {
 		p.lowSamples = 0
 		p.exhausted = false
 		if p.low {
@@ -108,7 +133,7 @@ func (b *Broker) runQualityGuard(ctx context.Context, name string, session *Sess
 	}()
 	timer := time.NewTimer(warmup)
 	defer timer.Stop()
-	var policy qualityPolicy
+	policy := qualityPolicy{target: NativeResolution(session.quality)}
 	failedProbes := 0
 	for {
 		select {

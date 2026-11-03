@@ -3,6 +3,7 @@ package webui
 import (
 	"github.com/IDisposable/docker-wyze-bridge/internal/camera"
 	"github.com/IDisposable/docker-wyze-bridge/internal/lake"
+	"github.com/IDisposable/docker-wyze-bridge/internal/wyzeapi"
 	"net/http"
 	"strings"
 )
@@ -22,7 +23,7 @@ func (s *Server) handleShimLakeStream(w http.ResponseWriter, r *http.Request) {
 		state := cam.GetState()
 		return state == camera.StateConnecting || state == camera.StateStreaming
 	}
-	if cam == nil || cam.GetInfo().Model != "HL_PAN4" || !active() {
+	if cam == nil || !wyzeapi.IsLakeModel(cam.GetInfo().Model) || !active() {
 		http.NotFound(w, r)
 		return
 	}
@@ -31,7 +32,7 @@ func (s *Server) handleShimLakeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := cam.GetInfo()
-	s.lakeBroker.ServeCamera(w, r, name, info.MAC, info.Model, "2k", active)
+	s.lakeBroker.ServeCamera(w, r, name, info.MAC, info.Model, wyzeapi.LakeQuality(info.Model), active)
 }
 
 func (s *Server) CloseLakeCamera(name string) {

@@ -271,7 +271,7 @@ func (b *Broker) ServeCamera(w http.ResponseWriter, r *http.Request, name, mac, 
 	}
 	lock.Unlock()
 	locked = false
-	if b.ProbeQuality != nil && quality == "2k" {
+	if b.ProbeQuality != nil && guardsQuality(quality) {
 		go b.guardQuality(cameraCtx, name, session, operation)
 	}
 	// go2rtc closes this socket after ICE connects. Its r.Context is therefore

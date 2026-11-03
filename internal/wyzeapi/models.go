@@ -39,6 +39,7 @@ var modelRegistry = map[string]ModelSpec{
 	"HL_PANP":        {Name: "Pan Pro", IsPan: true},
 	// Pan v4: the cloud omits the TUTK uid, so TUTK cannot start.
 	"HL_PAN4": {Name: "Pan v4", IsWebRTCStreamer: true, IsPan: true},
+	"HL_BCP":  {Name: "Bulb Cam Pan", IsWebRTCStreamer: true},
 	"HL_CFL2": {Name: "Floodlight V2"},
 	// Bulb Cam: TUTK discovery does not complete. WebRTC does.
 	"HL_BC":   {Name: "Bulb Cam", IsWebRTCStreamer: true},

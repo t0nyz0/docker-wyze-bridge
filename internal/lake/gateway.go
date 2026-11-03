@@ -3,11 +3,15 @@ package lake
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -212,6 +216,9 @@ type Session struct {
 	renewID   string // Protected by mu; only the latest renewal reply is observed.
 	videoUID  int64  // Negotiated video identity, used only to classify notices.
 	videoSSRC int64
+	dsAEAD    cipher.AEAD
+	dsIV      []byte
+	dsSeq     uint16
 }
 
 func (s *Session) Close() {
@@ -328,6 +335,9 @@ func (s *Session) controls(quality bool) error {
 	if e != nil {
 		return e
 	}
+	if s.dsAEAD != nil {
+		raw = s.sealDataStream(raw)
+	}
 	return s.send("data_stream", object{"payload": base64.StdEncoding.EncodeToString(raw), "syncWithAudio": false, "sendTs": time.Since(s.started).Milliseconds()})
 }
 
@@ -347,7 +357,7 @@ func Open(ctx context.Context, initial *wyzeapi.LakeSession, sdp, quality string
 	if initial.EncryptionMode != 7 {
 		return nil, "", fmt.Errorf("unsupported Lake encryption")
 	}
-	if quality != "2k" && quality != "360p" {
+	if quality != "2k" && quality != "2.5k" && quality != "360p" {
 		return nil, "", fmt.Errorf("unsupported Lake quality")
 	}
 	secret, e := encryptedSecret(initial.EncryptionKey)
@@ -375,6 +385,13 @@ func openEdges(ctx context.Context, initial *wyzeapi.LakeSession, o *offer, qual
 		conn.SetReadLimit(1024 * 1024)
 		runCtx, cancel := context.WithCancel(ctx)
 		s := &Session{conn: conn, stopped: make(chan struct{}), events: make(chan Event, 32), cancel: cancel, initial: initial, renewing: renew, quality: quality, started: time.Now()}
+		if initial.EncryptDataStream {
+			if e := s.initDataStreamCrypto(); e != nil {
+				_ = conn.Close()
+				cancel()
+				return nil, "", e
+			}
+		}
 		context.AfterFunc(runCtx, s.Close)
 		msg := object{"uid": initial.UID, "p2p_id": 1, "session_id": requestID(), "app_id": initial.AppID, "channel_key": initial.RTCToken, "channel_name": initial.Channel, "sdk_version": "4.24.0", "browser": "Wyze Bridge WebRTC receiver", "process_id": "process-" + requestID(), "mode": "rtc", "codec": "h265", "role": "host", "has_changed_gateway": false, "ap_response": edge.response, "extend": "", "details": object{}, "features": object{"rejoin": true}, "attributes": object{"userAttributes": object{"enablePublishedUserList": true, "maxSubscription": 50, "enableUserLicenseCheck": true, "enableRTX": true, "enableInstantVideo": false, "enableDataStream2": false, "enableAutFeedback": true, "enableUserAutoRebalanceCheck": true, "enableXR": true, "enableLossbasedBwe": true, "enableAutCC": true, "enablePreallocPC": false, "enablePubTWCC": false, "enableSubTWCC": true, "enablePubRTX": true, "enableSubRTX": true}}, "join_ts": time.Now().UnixMilli(), "ortc": o.ortc(), "default_video_stream": 0, "aes_mode": "aes-128-gcm2", "aes_secret": secret, "aes_salt": initial.EncryptionSalt, "aes_encrypt": true}
 		if s.send("join_v3", msg) != nil {
@@ -558,4 +575,42 @@ func (s *Session) renew(ctx context.Context) bool {
 	}
 	s.notify("token_renewal_sent", 0)
 	return true
+}
+
+func (s *Session) initDataStreamCrypto() error {
+	salt, e := base64.StdEncoding.DecodeString(s.initial.EncryptionSalt)
+	if e != nil || len(salt) != 32 {
+		return fmt.Errorf("invalid Lake data-stream salt")
+	}
+	km, e := pbkdf2.Key(sha256.New, s.initial.AppID+s.initial.Channel+s.initial.EncryptionKey, salt, 1000, 16+12)
+	if e != nil {
+		return fmt.Errorf("Lake data-stream key derivation failed")
+	}
+	block, e := aes.NewCipher(km[:16])
+	if e != nil {
+		return fmt.Errorf("Lake data-stream cipher failed")
+	}
+	aead, e := cipher.NewGCM(block)
+	if e != nil {
+		return fmt.Errorf("Lake data-stream cipher failed")
+	}
+	s.dsAEAD, s.dsIV = aead, km[16:28]
+	return nil
+}
+
+func (s *Session) sealDataStream(raw []byte) []byte {
+	sum := 0
+	for _, b := range raw {
+		sum += int(b)
+	}
+	s.mu.Lock()
+	seq := s.dsSeq
+	s.dsSeq++
+	s.mu.Unlock()
+	header := make([]byte, 10)
+	binary.BigEndian.PutUint16(header[4:6], seq)
+	binary.BigEndian.PutUint16(header[6:8], uint16(len(raw)))
+	binary.BigEndian.PutUint16(header[8:10], uint16(sum))
+	plain := append(append([]byte{}, raw...), make([]byte, 16-len(raw)%16)...)
+	return append(header, s.dsAEAD.Seal(nil, s.dsIV, plain, []byte{byte(sum), byte(sum >> 8)})...)
 }

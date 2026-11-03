@@ -125,7 +125,7 @@ func (s *Server) buildMetricsSnapshot() MetricsSnapshot {
 			AudioOn:        cs.AudioOn,
 			ErrorCount:     cs.ErrorCount,
 		}
-		if cs.Info.Model == "HL_PAN4" {
+		if wyzeapi.IsLakeModel(cs.Info.Model) {
 			cm.Protocol = "lake"
 			cm.ProtocolForced = false
 		}

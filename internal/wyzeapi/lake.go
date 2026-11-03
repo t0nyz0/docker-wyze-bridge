@@ -20,19 +20,20 @@ import (
 // LakeSession is a short-lived, camera-scoped bootstrap for the integrated
 // WebRTC gateway. It must never be logged or exposed outside the Bridge process.
 type LakeSession struct {
-	AppID          string `json:"app_id"`
-	Channel        string `json:"channel"`
-	UID            int    `json:"uid"`
-	RTCToken       string `json:"rtc_token"`
-	UserID         string `json:"user_id"`
-	EncryptionMode int    `json:"encryption_mode"`
-	EncryptionKey  string `json:"encryption_key"`
-	EncryptionSalt string `json:"encryption_salt"`
-	Lifetime       int    `json:"lifetime_seconds"`
+	AppID             string `json:"app_id"`
+	Channel           string `json:"channel"`
+	UID               int    `json:"uid"`
+	RTCToken          string `json:"rtc_token"`
+	UserID            string `json:"user_id"`
+	EncryptionMode    int    `json:"encryption_mode"`
+	EncryptionKey     string `json:"encryption_key"`
+	EncryptionSalt    string `json:"encryption_salt"`
+	Lifetime          int    `json:"lifetime_seconds"`
+	EncryptDataStream bool   `json:"-"`
 }
 
 func (c *Client) RenewLakeToken(ctx context.Context, mac, model string, uid int) (string, error) {
-	if model != "HL_PAN4" || uid < 10000 || uid > 99999 {
+	if !IsLakeModel(model) || uid < 10000 || uid > 99999 {
 		return "", fmt.Errorf("invalid Lake renewal request")
 	}
 	resp, err := c.withLakeAuth(func(token, _ string) (map[string]interface{}, error) {
@@ -54,7 +55,7 @@ func (c *Client) RenewLakeToken(ctx context.Context, mac, model string, uid int)
 // GetLakeSession reuses Bridge authentication, including its refresh/re-login
 // handling. The receiver never needs an account password or a state-file mount.
 func (c *Client) GetLakeSession(ctx context.Context, mac, model string) (*LakeSession, error) {
-	if model != "HL_PAN4" {
+	if !IsLakeModel(model) {
 		return nil, fmt.Errorf("Lake receiver is currently supported for Pan v4 only")
 	}
 	randomUID, err := rand.Int(rand.Reader, big.NewInt(90000))
@@ -121,6 +122,7 @@ func (c *Client) GetLakeSession(ctx context.Context, mac, model string) (*LakeSe
 		AppID: getString(connection, "app_id"), Channel: getString(params, "channel"),
 		UID: getInt(connection, "uid"), RTCToken: getString(connection, "rtc_token"), UserID: userID,
 		EncryptionMode: 7, EncryptionKey: key, EncryptionSalt: salt, Lifetime: 3600,
+		EncryptDataStream: LakeEncryptsDataStream(model),
 	}
 	if s.AppID == "" || s.Channel == "" || s.RTCToken == "" || s.UserID == "" || s.UID <= 0 || key == "" {
 		return nil, fmt.Errorf("Lake session response is incomplete")
@@ -249,3 +251,18 @@ func unwrapLakeKey(encoded, token string) (string, error) {
 	}
 	return string(raw[:n]), nil
 }
+
+// IsLakeModel reports whether a camera model streams through the Lake path.
+func IsLakeModel(model string) bool { return model == "HL_PAN4" || model == "HL_BCP" }
+
+// LakeQuality returns the camera::resolution value for a model's top resolution.
+func LakeQuality(model string) string {
+	if model == "HL_BCP" {
+		return "2.5k"
+	}
+	return "2k"
+}
+
+// LakeEncryptsDataStream reports whether a model acts on data-stream commands
+// only when they are sealed the way the Agora Web SDK's encryptDataStream does.
+func LakeEncryptsDataStream(model string) bool { return model == "HL_BCP" }

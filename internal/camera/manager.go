@@ -274,7 +274,7 @@ func (m *Manager) Discover(ctx context.Context) error {
 			m.changeState(cam, StateOffline)
 			m.log.Warn().Str("cam", name).Msg("camera no longer in discovery, marking offline")
 		}
-		if !seen[name] && cam.GetInfo().Model == "HL_PAN4" {
+		if !seen[name] && wyzeapi.IsLakeModel(cam.GetInfo().Model) {
 			m.removeLakeOutputs(ctx, name)
 			// ConnectAll follows discovery; an absent Pan must not reopen
 			// its cloud session simply because it is now offline.
@@ -444,7 +444,7 @@ func (m *Manager) connectCamera(ctx context.Context, cam *Camera) {
 func (m *Manager) streamSourceFor(cam *Camera) (url, protocol string) {
 	info := cam.GetInfo()
 	switch {
-	case info.Model == "HL_PAN4":
+	case wyzeapi.IsLakeModel(info.Model):
 		return lakePreviewSource(cam.Name(), cam.Snapshot().Quality), "lake"
 	case cam.ForceWebRTC() || info.IsWebRTCStreamer():
 		return fmt.Sprintf("webrtc:http://127.0.0.1:%d/internal/wyze/webrtc/%s#format=wyze", m.cfg.BridgePort, cam.Name()), "webrtc"
@@ -617,7 +617,7 @@ func (m *Manager) reapRenameOrphans(ctx context.Context, filtered []wyzeapi.Came
 			Str("new_name", newName).
 			Str("mac", info.MAC).
 			Msg("camera rename detected, dropping orphan entry")
-		if info.Model == "HL_PAN4" {
+		if wyzeapi.IsLakeModel(info.Model) {
 			m.changeState(existing, StateOffline)
 			m.removeLakeOutputs(ctx, oldName)
 		} else if go2rtc := m.go2rtcClient(); go2rtc != nil {
@@ -668,7 +668,7 @@ func (m *Manager) SetQuality(ctx context.Context, name, quality string) error {
 	if cam == nil {
 		return nil
 	}
-	lake := cam.GetInfo().Model == "HL_PAN4"
+	lake := wyzeapi.IsLakeModel(cam.GetInfo().Model)
 	if lake && m.cfg.Go2RTCURL != "" {
 		return fmt.Errorf("Pan v4 streaming requires the embedded go2rtc receive window and templates")
 	}
@@ -704,7 +704,7 @@ func (m *Manager) RestartStream(ctx context.Context, name string) {
 		return
 	}
 
-	if cam.GetInfo().Model != "HL_PAN4" {
+	if !wyzeapi.IsLakeModel(cam.GetInfo().Model) {
 		if go2rtc := m.go2rtcClient(); go2rtc != nil {
 			_ = go2rtc.DeleteStream(ctx, name)
 		}
@@ -732,7 +732,7 @@ func (m *Manager) StopStream(ctx context.Context, name string) {
 	if cam == nil {
 		return
 	}
-	if cam.GetInfo().Model == "HL_PAN4" {
+	if wyzeapi.IsLakeModel(cam.GetInfo().Model) {
 		// Reject delayed local offers before tearing down registrations;
 		// deleting a producer may itself wait for an in-flight negotiation.
 		m.changeState(cam, StateOffline)
